@@ -1,0 +1,93 @@
+models:
+  gpt-4:
+    name: "GPT-4"
+    provider: "OpenAI"
+    context_window: 128000
+    latency_category: "interactive"  # real-time, interactive, batch
+    cost_tier: "premium"  # budget, standard, premium
+    reasoning_strength: 9.5  # 1-10 scale
+    tool_reliability: 9.0  # 1-10 scale
+    capabilities:
+      - "text_generation"
+      - "code_generation"
+      - "analysis"
+      - "tool_calling"
+    deployment_options:
+      - "api"
+      - "azure"
+    cost_per_token:
+      input: 0.00003
+      output: 0.00006
+    benchmark_scores:
+      mmlu: 86.4
+      hellaswag: 95.3
+      truthfulqa: 59.0
+
+  claude-3-sonnet:
+    name: "Claude 3 Sonnet"
+    provider: "Anthropic"
+    context_window: 200000
+    latency_category: "interactive"
+    cost_tier: "standard"
+    reasoning_strength: 9.0
+    tool_reliability: 8.5
+    capabilities:
+      - "text_generation"
+      - "analysis"
+      - "code_generation"
+      - "tool_calling"
+    deployment_options:
+      - "api"
+    cost_per_token:
+      input: 0.000015
+      output: 0.000075
+    benchmark_scores:
+      mmlu: 79.0
+      hellaswag: 89.0
+      truthfulqa: 68.0
+
+  gemini-pro:
+    name: "Gemini Pro"
+    provider: "Google"
+    context_window: 32768
+    latency_category: "real-time"
+    cost_tier: "budget"
+    reasoning_strength: 8.0
+    tool_reliability: 7.5
+    capabilities:
+      - "text_generation"
+      - "analysis"
+      - "multimodal"
+    deployment_options:
+      - "api"
+      - "vertex_ai"
+    cost_per_token:
+      input: 0.0000005
+      output: 0.0000015
+    benchmark_scores:
+      mmlu: 71.8
+      hellaswag: 87.8
+      truthfulqa: 22.8
+
+  llama-2-70b:
+    name: "Llama 2 70B"
+    provider: "Meta"
+    context_window: 4096
+    latency_category: "batch"
+    cost_tier: "budget"
+    reasoning_strength: 7.5
+    tool_reliability: 6.0
+    capabilities:
+      - "text_generation"
+      - "analysis"
+    deployment_options:
+      - "local"
+      - "cloud"
+      - "api"
+    cost_per_token:
+      input: 0.0000007
+      output: 0.0000009
+    benchmark_scores:
+      mmlu: 68.9
+      hellaswag: 87.3
+      truthfulqa: 45.6
