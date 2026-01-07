@@ -1,197 +1,270 @@
-"""
-Discovery page UI components
-"""
-
 import streamlit as st
-import json
-from agents.discovery import DiscoveryAgent
+import logging
+from typing import Optional
+
+from agents.discovery import create_discovery_agent
+from agents.llm_adapter import LLMConfig
 from models.schemas import TaskType, LatencyCategory
+from utils.ui_helpers import show_spinner, toast_success, toast_error, toast_warning
 
 
-def render_discovery_page():
-    """Render the discovery/constraint extraction page"""
-    st.header("🔍 Step 1: Use Case Discovery")
-    st.markdown("Tell us about your LLM use case so we can find the best model for your needs.")
-    
-    # Initialize discovery agent
-    if 'discovery_agent' not in st.session_state:
-        st.session_state.discovery_agent = DiscoveryAgent()
-    
-    discovery_agent = st.session_state.discovery_agent
-    
-    # Main use case input
-    st.subheader("📝 Describe Your Use Case")
-    user_input = st.text_area(
-        "Describe what you want to use the LLM for:",
-        placeholder="e.g., I need to analyze customer feedback data to identify trends and generate summary reports for my team. The analysis needs to be accurate and I'll be processing about 1000 reviews per day.",
-        height=100,
-        help="Provide as much detail as possible about your intended use case, performance requirements, and constraints."
-    )
-    
-    # Structured input form
-    st.subheader("🎯 Specific Requirements")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Task type selection
-        task_type_options = ["Auto-detect"] + [t.value for t in TaskType]
-        selected_task_type = st.selectbox(
-            "Task Type:",
-            options=task_type_options,
-            help="What type of task will the LLM primarily perform?"
-        )
-        
-        # Latency requirements
-        latency_options = ["Auto-detect"] + [l.value for l in LatencyCategory]
-        selected_latency = st.selectbox(
-            "Latency Requirements:",
-            options=latency_options,
-            help="How quickly do you need responses?"
-        )
-    
-    with col2:
-        # Budget constraints
-        budget_input = st.text_input(
-            "Budget Constraint:",
-            placeholder="e.g., $100/month or budget-conscious",
-            help="Monthly budget or cost sensitivity (budget/standard/premium)"
-        )
-        
-        # Context window
-        context_input = st.text_input(
-            "Context Window Needs:",
-            placeholder="e.g., 32k tokens or long documents",
-            help="How much text do you need to process at once?"
-        )
-    
-    # Advanced options
-    with st.expander("⚙️ Advanced Options"):
-        st.markdown("**Priority Weights** (will be auto-inferred if not specified)")
-        
-        col3, col4 = st.columns(2)
-        with col3:
-            reasoning_weight = st.slider("Reasoning/Accuracy", 0.0, 1.0, 0.25, 0.05)
-            latency_weight = st.slider("Speed/Latency", 0.0, 1.0, 0.25, 0.05)
-        with col4:
-            cost_weight = st.slider("Cost Efficiency", 0.0, 1.0, 0.25, 0.05)
-            reliability_weight = st.slider("Reliability", 0.0, 1.0, 0.25, 0.05)
-        
-        # Normalize weights
-        total_weight = reasoning_weight + latency_weight + cost_weight + reliability_weight
-        if total_weight > 0:
-            custom_weights = {
-                "reasoning": reasoning_weight / total_weight,
-                "latency": latency_weight / total_weight,
-                "cost": cost_weight / total_weight,
-                "reliability": reliability_weight / total_weight
-            }
-        else:
-            custom_weights = None
-    
-    # Extract constraints button
-    if st.button("🔍 Analyze Requirements", type="primary"):
-        if not user_input.strip():
-            st.error("Please provide a description of your use case.")
-            return
-        
-        with st.spinner("Analyzing your requirements..."):
-            # Extract constraints
-            task_type_param = None if selected_task_type == "Auto-detect" else selected_task_type
-            latency_param = None if selected_latency == "Auto-detect" else selected_latency
-            
-            constraints = discovery_agent.extract_constraints(
-                user_input=user_input,
-                use_case_type=task_type_param,
-                budget_input=budget_input if budget_input.strip() else None,
-                latency_input=latency_param,
-                context_input=context_input if context_input.strip() else None
+def render_discovery_page(
+    llm_config: Optional[LLMConfig] = None,
+    llm_enabled: bool = False,
+):
+    """Render the discovery page (UI-enhanced, logic unchanged)"""
+
+    st.markdown("## 🔍 Step 1: Use Case Discovery")
+    st.caption("Describe your use case and priorities to identify the right LLM")
+
+    # =========================================================
+    # AI STATUS (CLEAR BUT NOT LOUD)
+    # =========================================================
+    if llm_enabled and llm_config:
+        st.success(f"🤖 AI-enhanced analysis active ({llm_config.provider.value})")
+    else:
+        st.info("🔧 Rule-based analysis")
+
+    # =========================================================
+    # INITIALIZE DISCOVERY AGENT (UNCHANGED)
+    # =========================================================
+    if (
+        "discovery_agent" not in st.session_state
+        or st.session_state.get("llm_config_changed", False)
+    ):
+        try:
+            st.session_state.discovery_agent = create_discovery_agent(
+                enable_llm=llm_enabled,
+                llm_config=llm_config,
             )
-            
-            # Override with custom weights if provided
-            if custom_weights:
-                constraints.priority_weights = custom_weights
-            
-            # Store in session state
-            st.session_state.constraints = constraints
-            st.session_state.step = 2  # Move to next step
-        
-        st.success("✅ Requirements analyzed successfully!")
+            st.session_state.llm_config_changed = False
+            st.session_state.discovery_method = (
+                "AI-Enhanced" if llm_enabled else "Rule-Based"
+            )
+        except Exception as e:
+            logging.error(f"Discovery agent init failed: {e}")
+            toast_error("Failed to initialize AI agent. Falling back.")
+            st.session_state.discovery_agent = create_discovery_agent(enable_llm=False)
+            st.session_state.discovery_method = "Rule-Based (Fallback)"
+
+    discovery_agent = st.session_state.discovery_agent
+
+    # =========================================================
+    # SECTION 1 — PRIMARY INPUT (MOST IMPORTANT)
+    # =========================================================
+    st.markdown("### 📝 Describe your use case")
+
+    user_input = st.text_area(
+        label="What do you want to use an LLM for?",
+        placeholder=(
+            "Example:\n"
+            "Analyze customer feedback to identify trends and generate summaries. "
+            "Accuracy is important. ~1,000 reviews/day."
+        ),
+        height=120,
+    )
+
+    # =========================================================
+    # SECTION 2 — STRUCTURED REFINEMENTS
+    # =========================================================
+    st.markdown("### 🎯 Refine your requirements")
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        task_type = st.selectbox(
+            "Primary Task",
+            ["Auto-detect"] + [t.value for t in TaskType],
+        )
+
+        latency = st.selectbox(
+            "Latency Requirement",
+            ["Auto-detect"] + [l.value for l in LatencyCategory],
+        )
+
+    with c2:
+        budget_input = st.text_input(
+            "Budget sensitivity",
+            placeholder="e.g. budget-conscious / $100 per month",
+        )
+
+        context_input = st.text_input(
+            "Context window needs",
+            placeholder="e.g. 32k tokens / long documents",
+        )
+
+    # =========================================================
+    # SECTION 3 — ADVANCED OPTIONS (OPTIONAL)
+    # =========================================================
+    with st.expander("⚙️ Advanced: Adjust priority weights"):
+        st.caption("If not set, weights are inferred automatically")
+
+        c3, c4 = st.columns(2)
+
+        with c3:
+            reasoning_w = st.slider("Reasoning / Accuracy", 0.0, 1.0, 0.25, 0.05)
+            latency_w = st.slider("Latency / Speed", 0.0, 1.0, 0.25, 0.05)
+
+        with c4:
+            cost_w = st.slider("Cost Efficiency", 0.0, 1.0, 0.25, 0.05)
+            reliability_w = st.slider("Reliability", 0.0, 1.0, 0.25, 0.05)
+
+        total = reasoning_w + latency_w + cost_w + reliability_w
+        custom_weights = (
+            {
+                "reasoning": reasoning_w / total,
+                "latency": latency_w / total,
+                "cost": cost_w / total,
+                "reliability": reliability_w / total,
+            }
+            if total > 0
+            else None
+        )
+
+    # =========================================================
+    # PRIMARY ACTION
+    # =========================================================
+    st.markdown("---")
+
+    if st.button("🔍 Analyze requirements", type="primary"):
+        if not user_input.strip():
+            st.error("Please describe your use case to continue.")
+            return
+
+        with show_spinner(
+            f"Analyzing using {st.session_state.discovery_method} approach..."
+        ):
+            try:
+                constraints = discovery_agent.extract_constraints(
+                    user_input=user_input,
+                    use_case_type=None if task_type == "Auto-detect" else task_type,
+                    budget_input=budget_input or None,
+                    latency_input=None if latency == "Auto-detect" else latency,
+                    context_input=context_input or None,
+                )
+
+                if custom_weights:
+                    constraints.priority_weights = custom_weights
+
+                st.session_state.constraints = constraints
+                st.session_state.step = 2
+
+                toast_success("Requirements analyzed successfully")
+
+            except Exception as e:
+                logging.error(f"Constraint extraction failed: {e}")
+                toast_error("Analysis failed")
+
+                if llm_enabled:
+                    toast_warning("Retrying with rule-based fallback")
+                    try:
+                        fallback = create_discovery_agent(enable_llm=False)
+                        constraints = fallback.extract_constraints(
+                            user_input=user_input,
+                            use_case_type=None,
+                            budget_input=budget_input or None,
+                            latency_input=None,
+                            context_input=context_input or None,
+                        )
+                        if custom_weights:
+                            constraints.priority_weights = custom_weights
+                        st.session_state.constraints = constraints
+                        st.session_state.step = 2
+                        toast_success("Fallback analysis successful")
+                    except Exception as fe:
+                        toast_error(f"Fallback failed: {fe}")
+                        return
+                else:
+                    return
+
         st.rerun()
-    
-    # Display extracted constraints if available
-    if hasattr(st.session_state, 'constraints') and st.session_state.constraints:
-        st.subheader("📊 Extracted Constraints")
-        
-        constraints = st.session_state.constraints
-        
-        # Display in a nice format
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**Task Information**")
-            st.write(f"**Task Type:** {constraints.task_type.value if constraints.task_type else 'Not specified'}")
-            st.write(f"**Latency Tolerance:** {constraints.latency_tolerance.value if constraints.latency_tolerance else 'Not specified'}")
-            st.write(f"**Max Cost per Token:** ${constraints.max_cost_per_token:.6f}" if constraints.max_cost_per_token else "**Max Cost per Token:** Not specified")
-            st.write(f"**Min Context Window:** {constraints.min_context_window:,} tokens" if constraints.min_context_window else "**Min Context Window:** Not specified")
-        
-        with col2:
-            st.markdown("**Requirements**")
-            if constraints.required_capabilities:
-                st.write("**Required Capabilities:**")
-                for capability in constraints.required_capabilities:
-                    st.write(f"• {capability}")
-            
-            if constraints.deployment_preferences:
-                st.write("**Deployment Preferences:**")
-                for pref in constraints.deployment_preferences:
-                    st.write(f"• {pref}")
-        
-        # Priority weights visualization
-        st.markdown("**Priority Weights**")
-        weights_df = {
-            "Criterion": list(constraints.priority_weights.keys()),
-            "Weight": [f"{v:.1%}" for v in constraints.priority_weights.values()]
-        }
-        st.bar_chart(constraints.priority_weights)
-        
-        # Show raw JSON for debugging
-        with st.expander("🔧 Raw Constraints (JSON)"):
-            st.json(constraints.model_dump())
-        
-        # Check if we need clarifying questions
-        questions = discovery_agent.ask_clarifying_questions(constraints)
+
+    # =========================================================
+    # SECTION 4 — EXTRACTED CONSTRAINTS (RESULT)
+    # =========================================================
+    if st.session_state.get("constraints"):
+        c = st.session_state.constraints
+
+        st.markdown("### 📊 Extracted constraints")
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            st.markdown(
+                f"""
+                <div class="card">
+                    <b>Task</b><br/>
+                    {c.task_type.value if c.task_type else "N/A"}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with c2:
+            st.markdown(
+                f"""
+                <div class="card">
+                    <b>Latency</b><br/>
+                    {c.latency_tolerance.value if c.latency_tolerance else "N/A"}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with c3:
+            top = max(c.priority_weights.items(), key=lambda x: x[1])
+            st.markdown(
+                f"""
+                <div class="card">
+                    <b>Top Priority</b><br/>
+                    {top[0].title()} ({top[1]:.0%})
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with st.expander("🔧 View full constraint details"):
+            st.json(c.model_dump())
+
+        questions = discovery_agent.ask_clarifying_questions(c)
         if questions:
-            st.warning("**Clarifying Questions:**")
-            for question in questions:
-                st.write(f"• {question}")
-        
-        # Navigation
-        if discovery_agent.has_sufficient_information(constraints):
+            st.warning("Additional clarification may improve results:")
+            for q in questions:
+                st.write(f"• {q}")
+
+        if discovery_agent.has_sufficient_information(c):
             if st.button("➡️ Proceed to Model Filtering", type="primary"):
                 st.session_state.step = 2
                 st.rerun()
         else:
-            st.error("Please provide more information to proceed.")
+            st.error("Please provide more information to continue.")
 
 
 def render_constraints_summary(constraints):
-    """Render a compact summary of constraints for other pages"""
+    """Compact constraint summary for later steps"""
+
     if not constraints:
         return
-    
+
     with st.expander("📋 Current Constraints"):
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
             st.write(f"**Task:** {constraints.task_type.value if constraints.task_type else 'N/A'}")
             st.write(f"**Latency:** {constraints.latency_tolerance.value if constraints.latency_tolerance else 'N/A'}")
-        
-        with col2:
-            st.write(f"**Budget:** ${constraints.max_cost_per_token:.6f}" if constraints.max_cost_per_token else "**Budget:** N/A")
-            st.write(f"**Context:** {constraints.min_context_window:,}" if constraints.min_context_window else "**Context:** N/A")
-        
-        with col3:
-            st.write(f"**Capabilities:** {len(constraints.required_capabilities)}")
-            top_priority = max(constraints.priority_weights.items(), key=lambda x: x[1])
-            st.write(f"**Top Priority:** {top_priority[0]} ({top_priority[1]:.1%})")
+
+        with c2:
+            st.write(
+                f"**Budget:** ${constraints.max_cost_per_token:.6f}"
+                if constraints.max_cost_per_token
+                else "**Budget:** N/A"
+            )
+            st.write(
+                f"**Context:** {constraints.min_context_window:,}"
+                if constraints.min_context_window
+                else "**Context:** N/A"
+            )
+
+        with c3:
+            top = max(constraints.priority_weights.items(), key=lambda x: x[1])
+            st.write(f"**Top Priority:** {top[0]} ({top[1]:.0%})")

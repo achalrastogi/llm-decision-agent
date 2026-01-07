@@ -1,20 +1,34 @@
 """
 Recommendation Agent - Generates explainable recommendations with trade-offs and mitigation strategies
+Enhanced with LLM integration for dynamic recommendation generation
 """
 
+import logging
 from typing import Dict, List, Optional, Tuple
 from models.schemas import UserConstraints, ModelScore
 from models.registry import ModelRegistry
+from agents.llm_adapter import LLMManager, LLMConfig
 
 
-class RecommendationAgent:
+class EnhancedRecommendationAgent:
     """
     Converts analysis into human-readable advice with explicit trade-offs,
     mitigation strategies, and future-proofing guidance.
     """
     
-    def __init__(self, registry: ModelRegistry):
+    def __init__(self, registry: ModelRegistry, llm_manager: Optional[LLMManager] = None, use_llm: bool = True):
+        """
+        Initialize Recommendation Agent with optional LLM integration
+        
+        Args:
+            registry: Model registry for model information
+            llm_manager: LLM manager for intelligent recommendation generation
+            use_llm: Whether to use LLM or fall back to rule-based approach
+        """
         self.registry = registry
+        self.llm_manager = llm_manager
+        self.use_llm = use_llm and llm_manager is not None
+        self.logger = logging.getLogger("recommendation_agent")
         
         # Confidence thresholds for recommendations
         self.confidence_thresholds = {
@@ -56,6 +70,7 @@ class RecommendationAgent:
                               constraints: UserConstraints) -> Dict:
         """
         Generate comprehensive recommendation with context, trade-offs, and mitigation.
+        Uses LLM for intelligent recommendation generation with rule-based fallback.
         
         Args:
             model_scores: Scored and ranked models
@@ -68,6 +83,252 @@ class RecommendationAgent:
         if not model_scores:
             return self._generate_no_models_recommendation()
         
+        if self.use_llm:
+            try:
+                return self._generate_recommendation_with_llm(
+                    model_scores, trade_off_analysis, constraints
+                )
+            except Exception as e:
+                self.logger.warning(f"LLM recommendation generation failed, falling back to rule-based: {e}")
+        
+        # Fallback to rule-based recommendation
+        return self._generate_recommendation_rule_based(
+            model_scores, trade_off_analysis, constraints
+        )
+    
+    def _generate_recommendation_with_llm(self, model_scores: List[ModelScore], 
+                                        trade_off_analysis: Dict,
+                                        constraints: UserConstraints) -> Dict:
+        """Generate recommendation using LLM for intelligent analysis"""
+        
+        # Build comprehensive prompt with all context
+        prompt = self._build_recommendation_prompt(
+            model_scores, trade_off_analysis, constraints
+        )
+        
+        # Get LLM response
+        response = self.llm_manager.generate_response(
+            prompt, max_tokens=1500, temperature=0.4
+        )
+        
+        # Parse LLM response and combine with structured data
+        try:
+            llm_recommendation = self._parse_llm_recommendation(response.content)
+            
+            # Enhance with structured data
+            return self._enhance_llm_recommendation(
+                llm_recommendation, model_scores, trade_off_analysis, constraints
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to parse LLM recommendation: {e}")
+            # Fall back to rule-based if parsing fails
+            return self._generate_recommendation_rule_based(
+                model_scores, trade_off_analysis, constraints
+            )
+    
+    def _build_recommendation_prompt(self, model_scores: List[ModelScore], 
+                                   trade_off_analysis: Dict,
+                                   constraints: UserConstraints) -> str:
+        """Build comprehensive prompt for LLM recommendation generation"""
+        
+        # Get model details
+        model_details = {}
+        for score in model_scores[:3]:  # Top 3 models
+            for model_id, model_info in self.registry.get_all_models().items():
+                if model_info.name == score.model_name:
+                    model_details[score.model_name] = model_info
+                    break
+        
+        prompt = f"""You are an expert AI consultant providing LLM model recommendations. 
+Analyze the following data and provide a comprehensive, personalized recommendation.
+
+## User Requirements:
+- Task Type: {constraints.task_type.value if constraints.task_type else 'Not specified'}
+- Latency Tolerance: {constraints.latency_tolerance.value if constraints.latency_tolerance else 'Not specified'}
+- Budget Constraint: ${constraints.max_cost_per_token:.6f} per token
+- Context Window: {constraints.min_context_window:,} tokens minimum
+- Required Capabilities: {', '.join(constraints.required_capabilities)}
+- Priority Weights: {', '.join([f'{k}: {v:.1%}' for k, v in constraints.priority_weights.items()])}
+
+## Top Model Candidates:
+"""
+        
+        # Add model details
+        for i, score in enumerate(model_scores[:3], 1):
+            model_info = model_details.get(score.model_name)
+            prompt += f"""
+### {i}. {score.model_name} (Score: {score.overall_score:.3f})
+- Provider: {model_info.provider if model_info else 'Unknown'}
+- Context Window: {model_info.context_window:,} tokens
+- Latency: {model_info.latency_category.value}
+- Cost: Input ${model_info.cost_per_token['input']:.6f}, Output ${model_info.cost_per_token['output']:.6f}
+- Dimension Scores: {', '.join([f'{k}: {v:.3f}' for k, v in score.dimension_scores.items()])}
+- Capabilities: {', '.join(model_info.capabilities) if model_info else 'Not specified'}
+"""
+        
+        prompt += f"""
+## Trade-off Analysis:
+{trade_off_analysis.get('summary', 'No specific trade-offs identified')}
+
+## Instructions:
+Provide a comprehensive recommendation that includes:
+
+1. **Primary Recommendation**: Which model to choose and why
+2. **Context & Rationale**: Detailed explanation of why this model fits the user's needs
+3. **Key Trade-offs**: What the user gains and potentially gives up with this choice
+4. **Mitigation Strategies**: Specific, actionable strategies to address any weaknesses
+5. **Implementation Guidance**: Practical next steps for deployment
+6. **Future-Proofing**: Advice for scaling and adapting over time
+
+Make your recommendation:
+- Specific to the user's stated requirements and priorities
+- Honest about trade-offs and limitations
+- Actionable with concrete next steps
+- Forward-looking for long-term success
+
+Write in a professional but accessible tone, as if advising a technical decision-maker.
+"""
+        
+        return prompt
+    
+    def _parse_llm_recommendation(self, response_content: str) -> Dict:
+        """Parse LLM response into structured recommendation components"""
+        # Simple parsing - look for key sections
+        sections = {
+            'context': '',
+            'trade_offs': '',
+            'mitigation_strategies': '',
+            'implementation_guidance': '',
+            'future_proofing': '',
+            'decision_rationale': ''
+        }
+        
+        # Extract content (simplified parsing)
+        lines = response_content.split('\n')
+        current_section = 'context'
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Detect section headers
+            line_lower = line.lower()
+            if 'trade-off' in line_lower or 'tradeoff' in line_lower:
+                current_section = 'trade_offs'
+            elif 'mitigation' in line_lower or 'strategy' in line_lower:
+                current_section = 'mitigation_strategies'
+            elif 'implementation' in line_lower or 'deployment' in line_lower:
+                current_section = 'implementation_guidance'
+            elif 'future' in line_lower or 'scaling' in line_lower:
+                current_section = 'future_proofing'
+            elif 'rationale' in line_lower or 'decision' in line_lower:
+                current_section = 'decision_rationale'
+            else:
+                # Add content to current section
+                if sections[current_section]:
+                    sections[current_section] += ' '
+                sections[current_section] += line
+        
+        # If no clear sections found, put everything in context
+        if not any(sections.values()):
+            sections['context'] = response_content
+            sections['decision_rationale'] = "LLM-generated recommendation based on comprehensive analysis."
+        
+        return sections
+    
+    def _enhance_llm_recommendation(self, llm_recommendation: Dict, 
+                                  model_scores: List[ModelScore],
+                                  trade_off_analysis: Dict,
+                                  constraints: UserConstraints) -> Dict:
+        """Enhance LLM recommendation with structured data"""
+        
+        primary_recommendation = model_scores[0]
+        confidence = self._assess_confidence(model_scores, trade_off_analysis)
+        
+        return {
+            'primary_model': {
+                'name': primary_recommendation.model_name,
+                'score': primary_recommendation.overall_score,
+                'confidence': confidence['level'],
+                'confidence_reason': confidence['reason']
+            },
+            'context': llm_recommendation.get('context', 'LLM-generated recommendation'),
+            'trade_offs': self._parse_trade_offs_from_llm(llm_recommendation.get('trade_offs', '')),
+            'mitigation_strategies': self._parse_strategies_from_llm(
+                llm_recommendation.get('mitigation_strategies', '')
+            ),
+            'future_proofing': self._parse_guidance_from_llm(
+                llm_recommendation.get('future_proofing', '')
+            ),
+            'implementation_guidance': self._parse_guidance_from_llm(
+                llm_recommendation.get('implementation_guidance', '')
+            ),
+            'alternatives': self._generate_alternatives_summary(model_scores),
+            'decision_rationale': llm_recommendation.get('decision_rationale', 
+                                                       'Comprehensive analysis of requirements and model capabilities.')
+        }
+    
+    def _parse_trade_offs_from_llm(self, trade_offs_text: str) -> List[Dict]:
+        """Parse trade-offs from LLM text into structured format"""
+        if not trade_offs_text:
+            return []
+        
+        # Simple parsing - split by sentences and create trade-off objects
+        sentences = [s.strip() for s in trade_offs_text.split('.') if s.strip()]
+        trade_offs = []
+        
+        for sentence in sentences[:3]:  # Limit to 3 trade-offs
+            if len(sentence) > 20:  # Filter out very short fragments
+                trade_offs.append({
+                    'alternative_model': 'Alternative option',
+                    'score_difference': 0.0,
+                    'trade_off_summary': sentence,
+                    'when_to_consider': 'Consider based on specific requirements'
+                })
+        
+        return trade_offs
+    
+    def _parse_strategies_from_llm(self, strategies_text: str) -> List[str]:
+        """Parse mitigation strategies from LLM text"""
+        if not strategies_text:
+            return ["Implement monitoring and optimization practices for best performance."]
+        
+        # Split by bullet points, numbers, or sentences
+        strategies = []
+        
+        # Look for bullet points or numbered lists
+        lines = strategies_text.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line and (line.startswith('-') or line.startswith('•') or 
+                        line.startswith('*') or any(line.startswith(f'{i}.') for i in range(1, 10))):
+                # Clean up formatting
+                clean_line = line.lstrip('-•*0123456789. ')
+                if len(clean_line) > 10:
+                    strategies.append(clean_line)
+        
+        # If no bullet points found, split by sentences
+        if not strategies:
+            sentences = [s.strip() for s in strategies_text.split('.') if s.strip()]
+            strategies = [s for s in sentences if len(s) > 20][:4]  # Limit to 4
+        
+        return strategies if strategies else ["Implement best practices for optimal performance."]
+    
+    def _parse_guidance_from_llm(self, guidance_text: str) -> List[str]:
+        """Parse guidance from LLM text into list format"""
+        if not guidance_text:
+            return []
+        
+        return self._parse_strategies_from_llm(guidance_text)  # Same parsing logic
+    
+    def _generate_recommendation_rule_based(self, model_scores: List[ModelScore], 
+                                          trade_off_analysis: Dict,
+                                          constraints: UserConstraints) -> Dict:
+        """
+        Rule-based recommendation generation (original implementation)
+        Used as fallback when LLM is unavailable
+        """
         primary_recommendation = model_scores[0]
         
         # Determine confidence level
@@ -453,3 +714,62 @@ class RecommendationAgent:
             'alternatives': [],
             'decision_rationale': "No viable models found matching the specified constraints. Consider adjusting requirements or exploring alternative approaches."
         }
+
+# Backward compatibility wrapper
+class RecommendationAgent(EnhancedRecommendationAgent):
+    """
+    Backward compatibility wrapper for the original RecommendationAgent.
+    Maintains the same interface while providing enhanced LLM capabilities.
+    """
+    
+    def __init__(self, registry: ModelRegistry, llm_manager: Optional[LLMManager] = None):
+        """Initialize with optional LLM manager for enhanced capabilities"""
+        super().__init__(registry=registry, llm_manager=llm_manager, use_llm=llm_manager is not None)
+
+
+def create_recommendation_agent(registry: ModelRegistry, enable_llm: bool = True, 
+                              llm_config: Optional[LLMConfig] = None) -> RecommendationAgent:
+    """
+    Factory function to create Recommendation Agent with optional LLM integration
+    
+    Args:
+        registry: Model registry for model information
+        enable_llm: Whether to enable LLM capabilities
+        llm_config: LLM configuration (uses mock if None and enable_llm=True)
+    
+    Returns:
+        RecommendationAgent instance with appropriate configuration
+    """
+    if not enable_llm:
+        return RecommendationAgent(registry)
+    
+    try:
+        from agents.llm_adapter import LLMManager, LLMProvider
+        
+        # Use provided config or default to mock for testing
+        if llm_config is None:
+            llm_config = LLMConfig(
+                provider=LLMProvider.MOCK,
+                model="mock-model",
+                max_tokens=1500,
+                temperature=0.4
+            )
+        
+        # Create LLM manager with fallback to mock
+        fallback_config = LLMConfig(
+            provider=LLMProvider.MOCK,
+            model="mock-model",
+            max_tokens=1500,
+            temperature=0.4
+        )
+        
+        llm_manager = LLMManager(
+            primary_config=llm_config,
+            fallback_configs=[fallback_config] if llm_config.provider != LLMProvider.MOCK else None
+        )
+        
+        return RecommendationAgent(registry, llm_manager=llm_manager)
+        
+    except Exception as e:
+        logging.warning(f"Failed to create LLM-enabled Recommendation Agent: {e}")
+        return RecommendationAgent(registry)  # Fall back to rule-based only
