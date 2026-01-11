@@ -104,9 +104,9 @@ def render_filtering_page(registry: ModelRegistry, constraints: UserConstraints)
         with st.expander("Constraint Impact Breakdown", expanded=True):
             st.bar_chart(
                 impact_df.set_index("Constraint")["Models Eliminated"],
-                use_container_width=True,
+                width="stretch",
             )
-            st.dataframe(impact_df, use_container_width=True)
+            st.dataframe(impact_df, width="stretch")
     else:
         st.success("🎉 No models were eliminated by your constraints.")
 
@@ -160,7 +160,7 @@ def render_filtering_page(registry: ModelRegistry, constraints: UserConstraints)
                     for m in filtering_summary["viable_models"]
                 ]
             )
-            st.dataframe(viable_df, use_container_width=True)
+            st.dataframe(viable_df, width="stretch")
 
     if elimination_reasons:
         with st.expander("❌ Eliminated Models (Detailed Reasons)"):
@@ -180,6 +180,19 @@ def render_filtering_page(registry: ModelRegistry, constraints: UserConstraints)
 
     with c1:
         if st.button("⬅️ Back to Discovery"):
+            # Reset discovery-related state ONLY
+            for key in [
+                "constraints",
+                "viable_models",
+                "elimination_reasons",
+                "filtering_summary",
+                "model_scores",
+                "trade_off_analysis",
+                "recommendation",
+            ]:
+                if key in st.session_state:
+                    del st.session_state[key]
+
             st.session_state.step = 1
             st.rerun()
 

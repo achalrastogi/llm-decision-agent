@@ -7,7 +7,7 @@ from models.registry import ModelRegistry
 from ui.discovery_page import render_discovery_page, render_constraints_summary
 from ui.filtering_page import render_filtering_page, render_filtering_summary
 from ui.scoring_page import render_scoring_page, render_scoring_summary
-from ui.recommendation_page import render_recommendation_page, render_recommendation_summary
+from ui.recommendation_page import render_recommendation_page
 
 from agents.llm_adapter import LLMConfig, LLMProvider, LLMAdapterFactory
 
@@ -132,15 +132,23 @@ registry = load_registry()
 # -------------------------------------------------
 # Header
 # -------------------------------------------------
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.title("Context-Aware LLM Model Comparison")
+header_left, header_right = st.columns([5, 2], vertical_alignment="center")
 
-with col2:
-    if st.session_state.get("llm_enabled"):
-        st.success("AI Mode")
-    else:
-        st.info("Rule-based Mode")
+with header_left:
+    st.markdown(
+    """
+    <h2 class="compact-title">Context-Aware LLM Model Comparison</h2>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+with header_right:
+    mode = "AI Mode" if st.session_state.get("llm_enabled") else "Rule-based Mode"
+    st.markdown(
+        f"<span class='mode-badge'>{mode}</span>",
+        unsafe_allow_html=True,
+    )
 
 st.divider()
 

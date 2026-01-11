@@ -14,8 +14,16 @@ def render_discovery_page(
 ):
     """Render the discovery page (UI-enhanced, logic unchanged)"""
 
-    st.markdown("## 🔍 Step 1: Use Case Discovery")
-    st.caption("Describe your use case and priorities to identify the right LLM")
+    st.markdown(
+    """
+    <h3 class="compact-step">🔍 Step 1: Use Case Discovery</h3>
+    <p class="compact-caption">
+        Describe your use case and priorities to identify the right LLM
+    </p>
+    """,
+    unsafe_allow_html=True,
+)
+
 
     # =========================================================
     # AI STATUS (CLEAR BUT NOT LOUD)
@@ -61,7 +69,7 @@ def render_discovery_page(
             "Analyze customer feedback to identify trends and generate summaries. "
             "Accuracy is important. ~1,000 reviews/day."
         ),
-        height=120,
+        height=100,
     )
 
     # =========================================================

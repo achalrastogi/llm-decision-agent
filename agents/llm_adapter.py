@@ -1,30 +1,33 @@
 """
-Enhanced LLM Adapter with real provider integration
-Addresses Critical Gap #1: Integrate actual LLM usage for intelligent agent behavior
+Enhanced LLM Adapter
+--------------------
+Key design goals:
+- Explicit system prompt support (prompt engineering)
+- Structured / schema-driven outputs
+- Minimal LLM usage
+- Deterministic core with AI augmentation
+- Backward compatibility with existing calls
 """
 
 import os
 import json
-import asyncio
-from typing import Dict, List, Optional, Any, Union
+import logging
+from typing import Dict, List, Optional, Any
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-import logging
 
-# Provider imports
+# =========================
+# Provider imports (safe)
+# =========================
 try:
-    import openai
     from openai import OpenAI
 except ImportError:
-    openai = None
     OpenAI = None
 
 try:
-    import anthropic
     from anthropic import Anthropic
 except ImportError:
-    anthropic = None
     Anthropic = None
 
 try:
@@ -33,402 +36,387 @@ except ImportError:
     genai = None
 
 
+# =========================
+# ENUMS & DATA MODELS
+# =========================
 class LLMProvider(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GOOGLE = "google"
-    MOCK = "mock"  # For testing without API keys
+    MOCK = "mock"
+
+
+@dataclass
+class LLMConfig:
+    provider: LLMProvider
+    model: str
+    api_key: Optional[str] = None
+    max_tokens: int = 800
+    temperature: float = 0.3
+    timeout: int = 30
 
 
 @dataclass
 class LLMResponse:
-    """Standardized response from LLM providers"""
     content: str
     provider: str
     model: str
     tokens_used: Optional[int] = None
     cost_estimate: Optional[float] = None
-    confidence: Optional[float] = None
     metadata: Optional[Dict[str, Any]] = None
 
 
-@dataclass
-class LLMConfig:
-    """Configuration for LLM providers"""
-    provider: LLMProvider
-    model: str
-    api_key: Optional[str] = None
-    max_tokens: int = 1000
-    temperature: float = 0.7
-    timeout: int = 30
-
-
+# =========================
+# BASE ADAPTER
+# =========================
 class BaseLLMAdapter(ABC):
-    """Abstract base class for LLM adapters"""
-    
+    """
+    Base adapter with structured generation support.
+    """
+
     def __init__(self, config: LLMConfig):
         self.config = config
-        self.logger = logging.getLogger(f"llm_adapter.{config.provider}")
-    
-    @abstractmethod
-    def generate_response(self, prompt: str, **kwargs) -> LLMResponse:
-        """Generate response from LLM"""
-        pass
-    
+        self.logger = logging.getLogger(f"llm_adapter.{config.provider.value}")
+
+    # -------------------------
+    # NEW: Structured generation
+    # -------------------------
+    def generate(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        output_schema: Optional[Dict[str, Any]] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> LLMResponse:
+        """
+        Canonical, expert-level generation API.
+        """
+
+        full_prompt = self._build_prompt(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            output_schema=output_schema,
+        )
+
+        return self.generate_response(
+            prompt=full_prompt,
+            temperature=temperature or self.config.temperature,
+            max_tokens=max_tokens or self.config.max_tokens,
+        )
+
+    # -------------------------
+    # Backward compatibility
+    # -------------------------
+    def generate_response(
+        self,
+        prompt: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> LLMResponse:
+        """
+        Legacy interface (kept for compatibility).
+        """
+        raise NotImplementedError
+
+    # -------------------------
+    # Prompt construction
+    # -------------------------
+    def _build_prompt(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        output_schema: Optional[Dict[str, Any]],
+    ) -> str:
+        prompt = f"""
+SYSTEM:
+{system_prompt}
+
+USER INPUT:
+{user_prompt}
+""".strip()
+
+        if output_schema:
+            prompt += f"""
+
+OUTPUT FORMAT (STRICT JSON ONLY):
+{json.dumps(output_schema, indent=2)}
+
+RULES:
+- Respond with VALID JSON only
+- Do NOT add explanations or markdown
+- Use null for unknown or missing values
+- Do NOT infer unstated information
+"""
+        return prompt
+
     @abstractmethod
     def estimate_cost(self, prompt: str, max_tokens: int) -> float:
-        """Estimate cost for the request"""
         pass
-    
+
     @abstractmethod
     def is_available(self) -> bool:
-        """Check if the provider is available"""
         pass
 
 
+# =========================
+# OPENAI ADAPTER
+# =========================
 class OpenAIAdapter(BaseLLMAdapter):
-    """OpenAI GPT adapter"""
-    
+
     def __init__(self, config: LLMConfig):
         super().__init__(config)
+
         if not OpenAI:
-            raise ImportError("OpenAI package not installed")
-        
+            raise ImportError("OpenAI SDK not installed")
+
         api_key = config.api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OpenAI API key not provided")
-        
+
         self.client = OpenAI(api_key=api_key)
-        
-        # Cost per token (approximate, should be updated regularly)
+
         self.cost_per_token = {
             "gpt-4": {"input": 0.00003, "output": 0.00006},
             "gpt-4-turbo": {"input": 0.00001, "output": 0.00003},
-            "gpt-3.5-turbo": {"input": 0.0000015, "output": 0.000002}
+            "gpt-3.5-turbo": {"input": 0.0000015, "output": 0.000002},
         }
-    
-    def generate_response(self, prompt: str, **kwargs) -> LLMResponse:
-        """Generate response using OpenAI API"""
+
+    def generate_response(
+        self,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> LLMResponse:
         try:
             response = self.client.chat.completions.create(
                 model=self.config.model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=kwargs.get("max_tokens", self.config.max_tokens),
-                temperature=kwargs.get("temperature", self.config.temperature),
-                timeout=self.config.timeout
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=self.config.timeout,
             )
-            
+
             content = response.choices[0].message.content
-            tokens_used = response.usage.total_tokens if response.usage else None
-            
-            # Estimate cost
-            cost_estimate = None
-            if tokens_used and self.config.model in self.cost_per_token:
-                input_tokens = response.usage.prompt_tokens
-                output_tokens = response.usage.completion_tokens
-                cost_estimate = (
-                    input_tokens * self.cost_per_token[self.config.model]["input"] +
-                    output_tokens * self.cost_per_token[self.config.model]["output"]
+            usage = response.usage
+
+            cost = None
+            if usage and self.config.model in self.cost_per_token:
+                cost = (
+                    usage.prompt_tokens * self.cost_per_token[self.config.model]["input"]
+                    + usage.completion_tokens * self.cost_per_token[self.config.model]["output"]
                 )
-            
+
             return LLMResponse(
                 content=content,
-                provider=self.config.provider.value,
+                provider="openai",
                 model=self.config.model,
-                tokens_used=tokens_used,
-                cost_estimate=cost_estimate,
-                metadata={"finish_reason": response.choices[0].finish_reason}
+                tokens_used=usage.total_tokens if usage else None,
+                cost_estimate=cost,
+                metadata={"finish_reason": response.choices[0].finish_reason},
             )
-            
+
         except Exception as e:
-            self.logger.error(f"OpenAI API error: {e}")
+            self.logger.error(f"OpenAI error: {e}")
             raise
-    
+
     def estimate_cost(self, prompt: str, max_tokens: int) -> float:
-        """Estimate cost for OpenAI request"""
-        if self.config.model not in self.cost_per_token:
+        tokens = len(prompt) // 4
+        costs = self.cost_per_token.get(self.config.model)
+        if not costs:
             return 0.0
-        
-        # Rough estimation: 4 chars per token
-        estimated_input_tokens = len(prompt) // 4
-        estimated_output_tokens = max_tokens
-        
-        costs = self.cost_per_token[self.config.model]
-        return (
-            estimated_input_tokens * costs["input"] +
-            estimated_output_tokens * costs["output"]
-        )
-    
+        return tokens * costs["input"] + max_tokens * costs["output"]
+
     def is_available(self) -> bool:
-        """Check if OpenAI is available"""
         try:
-            # Simple test call
             self.client.models.list()
             return True
         except Exception:
             return False
 
 
+# =========================
+# ANTHROPIC ADAPTER
+# =========================
 class AnthropicAdapter(BaseLLMAdapter):
-    """Anthropic Claude adapter"""
-    
+
     def __init__(self, config: LLMConfig):
         super().__init__(config)
+
         if not Anthropic:
-            raise ImportError("Anthropic package not installed")
-        
+            raise ImportError("Anthropic SDK not installed")
+
         api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("Anthropic API key not provided")
-        
+
         self.client = Anthropic(api_key=api_key)
-        
-        # Cost per token (approximate)
-        self.cost_per_token = {
-            "claude-3-opus-20240229": {"input": 0.000015, "output": 0.000075},
-            "claude-3-sonnet-20240229": {"input": 0.000003, "output": 0.000015},
-            "claude-3-haiku-20240307": {"input": 0.00000025, "output": 0.00000125}
-        }
-    
-    def generate_response(self, prompt: str, **kwargs) -> LLMResponse:
-        """Generate response using Anthropic API"""
-        try:
-            response = self.client.messages.create(
-                model=self.config.model,
-                max_tokens=kwargs.get("max_tokens", self.config.max_tokens),
-                temperature=kwargs.get("temperature", self.config.temperature),
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            content = response.content[0].text
-            tokens_used = response.usage.input_tokens + response.usage.output_tokens
-            
-            # Estimate cost
-            cost_estimate = None
-            if self.config.model in self.cost_per_token:
-                costs = self.cost_per_token[self.config.model]
-                cost_estimate = (
-                    response.usage.input_tokens * costs["input"] +
-                    response.usage.output_tokens * costs["output"]
-                )
-            
-            return LLMResponse(
-                content=content,
-                provider=self.config.provider.value,
-                model=self.config.model,
-                tokens_used=tokens_used,
-                cost_estimate=cost_estimate,
-                metadata={"stop_reason": response.stop_reason}
-            )
-            
-        except Exception as e:
-            self.logger.error(f"Anthropic API error: {e}")
-            raise
-    
-    def estimate_cost(self, prompt: str, max_tokens: int) -> float:
-        """Estimate cost for Anthropic request"""
-        if self.config.model not in self.cost_per_token:
-            return 0.0
-        
-        estimated_input_tokens = len(prompt) // 4
-        estimated_output_tokens = max_tokens
-        
-        costs = self.cost_per_token[self.config.model]
-        return (
-            estimated_input_tokens * costs["input"] +
-            estimated_output_tokens * costs["output"]
+
+    def generate_response(
+        self,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> LLMResponse:
+        response = self.client.messages.create(
+            model=self.config.model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
-    
+
+        content = response.content[0].text
+
+        return LLMResponse(
+            content=content,
+            provider="anthropic",
+            model=self.config.model,
+            tokens_used=response.usage.input_tokens + response.usage.output_tokens,
+        )
+
+    def estimate_cost(self, prompt: str, max_tokens: int) -> float:
+        return 0.0
+
     def is_available(self) -> bool:
-        """Check if Anthropic is available"""
-        try:
-            # Simple test - this might need adjustment based on Anthropic's API
-            return True  # Placeholder - implement actual availability check
-        except Exception:
-            return False
+        return True
 
 
+# =========================
+# GOOGLE GEMINI ADAPTER
+# =========================
 class GoogleAdapter(BaseLLMAdapter):
-    """Google Gemini adapter (google-genai SDK)"""
 
     def __init__(self, config: LLMConfig):
         super().__init__(config)
 
-        try:
-            from google import genai
-        except ImportError:
-            raise ImportError("google-genai package not installed")
+        if not genai:
+            raise ImportError("google-genai SDK not installed")
 
         api_key = config.api_key or os.getenv("GOOGLE_API_KEY")
         if not api_key:
             raise ValueError("Google API key not provided")
 
-        # NEW: client-based API
         self.client = genai.Client(api_key=api_key)
-
         self.model = config.model
 
-    def generate_response(self, prompt: str, **kwargs) -> LLMResponse:
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt
-            )
+    def generate_response(
+        self,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> LLMResponse:
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+        )
 
-            content = response.text
-
-            return LLMResponse(
-                content=content,
-                provider=self.config.provider.value,
-                model=self.model,
-                tokens_used=None,
-                cost_estimate=None,
-                metadata={"provider": "google-gemini"}
-            )
-
-        except Exception as e:
-            self.logger.error(f"Google Gemini API error: {e}")
-            raise
+        return LLMResponse(
+            content=response.text,
+            provider="google",
+            model=self.model,
+        )
 
     def estimate_cost(self, prompt: str, max_tokens: int) -> float:
-        # Gemini free tier – cost estimation optional
         return 0.0
 
     def is_available(self) -> bool:
         try:
-            # Lightweight ping
             self.client.models.list()
             return True
         except Exception:
             return False
 
+
+# =========================
+# MOCK ADAPTER
+# =========================
 class MockLLMAdapter(BaseLLMAdapter):
-    """Mock adapter for testing without API keys"""
-    
-    def __init__(self, config: LLMConfig):
-        super().__init__(config)
-        self.responses = {
-            "task_type": "Based on the description, this appears to be an analytical task requiring data processing and insight generation.",
-            "constraints": "The user requires: budget-conscious solution, interactive latency, moderate context window (8000 tokens), text generation and analysis capabilities.",
-            "recommendation": "I recommend GPT-4 for this use case due to its strong reasoning capabilities, which align with your analytical requirements. While it has premium pricing, the superior accuracy justifies the cost for complex analysis tasks."
-        }
-    
-    def generate_response(self, prompt: str, **kwargs) -> LLMResponse:
-        """Generate mock response"""
-        # Simple keyword-based response selection
-        prompt_lower = prompt.lower()
-        
-        if "task type" in prompt_lower or "classify" in prompt_lower:
-            content = self.responses["task_type"]
-        elif "constraint" in prompt_lower or "requirement" in prompt_lower:
-            content = self.responses["constraints"]
-        elif "recommend" in prompt_lower:
-            content = self.responses["recommendation"]
-        else:
-            content = "This is a mock response for testing purposes. The actual LLM integration would provide intelligent analysis here."
-        
+
+    def generate_response(
+        self,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> LLMResponse:
         return LLMResponse(
-            content=content,
+            content=json.dumps(
+                {
+                    "task_type": "analysis",
+                    "latency_tolerance": "interactive",
+                    "budget_sensitivity": "budget-conscious",
+                    "minimum_context_window": 8000,
+                    "required_capabilities": ["text-analysis", "summarization"],
+                }
+            ),
             provider="mock",
-            model=self.config.model,
-            tokens_used=len(content) // 4,
-            cost_estimate=0.001,  # Mock cost
-            metadata={"mock": True}
+            model="mock",
+            tokens_used=50,
+            cost_estimate=0.0,
+            metadata={"mock": True},
         )
-    
+
     def estimate_cost(self, prompt: str, max_tokens: int) -> float:
-        """Mock cost estimation"""
-        return 0.001
-    
+        return 0.0
+
     def is_available(self) -> bool:
-        """Mock is always available"""
         return True
 
 
+# =========================
+# FACTORY
+# =========================
 class LLMAdapterFactory:
-    """Factory for creating LLM adapters"""
-    
+
     @staticmethod
     def create_adapter(config: LLMConfig) -> BaseLLMAdapter:
-        """Create appropriate adapter based on provider"""
         if config.provider == LLMProvider.OPENAI:
             return OpenAIAdapter(config)
-        elif config.provider == LLMProvider.ANTHROPIC:
+        if config.provider == LLMProvider.ANTHROPIC:
             return AnthropicAdapter(config)
-        elif config.provider == LLMProvider.GOOGLE:
+        if config.provider == LLMProvider.GOOGLE:
             return GoogleAdapter(config)
-        elif config.provider == LLMProvider.MOCK:
+        if config.provider == LLMProvider.MOCK:
             return MockLLMAdapter(config)
-        else:
-            raise ValueError(f"Unsupported provider: {config.provider}")
-    
-    @staticmethod
-    def get_available_providers() -> List[LLMProvider]:
-        """Get list of available providers based on installed packages and API keys"""
-        available = [LLMProvider.MOCK]  # Mock is always available
-        
-        # Check OpenAI
-        if OpenAI and os.getenv("OPENAI_API_KEY"):
-            available.append(LLMProvider.OPENAI)
-        
-        # Check Anthropic
-        if Anthropic and os.getenv("ANTHROPIC_API_KEY"):
-            available.append(LLMProvider.ANTHROPIC)
-        
-        # Check Google
-        if genai and os.getenv("GOOGLE_API_KEY"):
-            available.append(LLMProvider.GOOGLE)
-        
-        return available
+
+        raise ValueError(f"Unsupported provider: {config.provider}")
 
 
+# =========================
+# MANAGER (FALLBACK READY)
+# =========================
 class LLMManager:
-    """Manages multiple LLM adapters with fallback and load balancing"""
-    
-    def __init__(self, primary_config: LLMConfig, fallback_configs: Optional[List[LLMConfig]] = None):
-        self.primary_adapter = LLMAdapterFactory.create_adapter(primary_config)
-        self.fallback_adapters = []
-        
-        if fallback_configs:
-            for config in fallback_configs:
-                try:
-                    adapter = LLMAdapterFactory.create_adapter(config)
-                    self.fallback_adapters.append(adapter)
-                except Exception as e:
-                    logging.warning(f"Failed to create fallback adapter for {config.provider}: {e}")
-        
-        self.logger = logging.getLogger("llm_manager")
-    
-    def generate_response(self, prompt: str, **kwargs) -> LLMResponse:
-        """Generate response with fallback support"""
-        # Try primary adapter first
-        try:
-            if self.primary_adapter.is_available():
-                return self.primary_adapter.generate_response(prompt, **kwargs)
-        except Exception as e:
-            self.logger.warning(f"Primary adapter failed: {e}")
-        
-        # Try fallback adapters
-        for adapter in self.fallback_adapters:
+
+    def __init__(
+        self,
+        primary_config: LLMConfig,
+        fallback_configs: Optional[List[LLMConfig]] = None,
+    ):
+        self.primary = LLMAdapterFactory.create_adapter(primary_config)
+        self.fallbacks = []
+
+        for cfg in fallback_configs or []:
             try:
-                if adapter.is_available():
-                    self.logger.info(f"Using fallback adapter: {adapter.config.provider}")
-                    return adapter.generate_response(prompt, **kwargs)
-            except Exception as e:
-                self.logger.warning(f"Fallback adapter {adapter.config.provider} failed: {e}")
-        
-        # If all fail, raise error
+                self.fallbacks.append(LLMAdapterFactory.create_adapter(cfg))
+            except Exception:
+                pass
+
+    def generate(self, **kwargs) -> LLMResponse:
+        try:
+            if self.primary.is_available():
+                return self.primary.generate(**kwargs)
+        except Exception:
+            pass
+
+        for fb in self.fallbacks:
+            try:
+                if fb.is_available():
+                    return fb.generate(**kwargs)
+            except Exception:
+                continue
+
         raise RuntimeError("All LLM adapters failed")
-    
+
     def estimate_cost(self, prompt: str, max_tokens: int) -> float:
-        """Estimate cost using primary adapter"""
-        return self.primary_adapter.estimate_cost(prompt, max_tokens)
-    
-    def get_status(self) -> Dict[str, bool]:
-        """Get availability status of all adapters"""
-        status = {"primary": self.primary_adapter.is_available()}
-        
-        for i, adapter in enumerate(self.fallback_adapters):
-            status[f"fallback_{i}"] = adapter.is_available()
-        
-        return status
+        return self.primary.estimate_cost(prompt, max_tokens)

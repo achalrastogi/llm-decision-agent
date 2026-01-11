@@ -84,7 +84,7 @@ def render_scoring_page(
         margin=dict(t=20, b=40),
     )
 
-    st.plotly_chart(fig_bar, use_container_width=True)
+    st.plotly_chart(fig_bar, width="stretch")
 
     # =========================================================
     # SECTION 3 — MULTI-DIMENSION COMPARISON
@@ -116,7 +116,7 @@ def render_scoring_page(
             showlegend=True,
         )
 
-        st.plotly_chart(fig_radar, use_container_width=True)
+        st.plotly_chart(fig_radar, width="stretch")
 
     # =========================================================
     # SECTION 4 — DETAILED BREAKDOWN (OPTIONAL)
@@ -133,7 +133,7 @@ def render_scoring_page(
                 for i, s in enumerate(model_scores)
             ]
         )
-        st.dataframe(scoring_df, use_container_width=True)
+        st.dataframe(scoring_df, width="stretch")
 
         selected = st.selectbox(
             "Inspect a model",
@@ -163,12 +163,19 @@ def render_scoring_page(
                 if t.get("advantages"):
                     st.markdown("**Where this model is stronger**")
                     for a in t["advantages"]:
-                        st.write(f"• {a['advantage']} (+{a['score_difference']:.3f})")
+                        st.write(
+                            f"• {a['dimension'].title()} "
+                            f"(+{a['delta']:.3f} relative score)"
+                        )
 
                 if t.get("disadvantages"):
                     st.markdown("**Where it is weaker**")
                     for d in t["disadvantages"]:
-                        st.write(f"• {d['disadvantage']} (−{d['score_difference']:.3f})")
+                        st.write(
+                            f"• {d['dimension'].title()} "
+                            f"(−{d['delta']:.3f} relative score)"
+                        )
+
 
     # =========================================================
     # SECTION 6 — PRIORITY WEIGHTS (CONTEXT)
@@ -186,7 +193,7 @@ def render_scoring_page(
         ]
     )
 
-    st.dataframe(weights_df, use_container_width=True)
+    st.dataframe(weights_df, width="stretch")
 
     # =========================================================
     # NAVIGATION
